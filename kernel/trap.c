@@ -5,6 +5,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "file.h"
+#include"fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,7 +69,71 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause()==13 || r_scause()==15){ // page fault
+    #ifdef LAB_MMAP
+    uint64 fault_va=r_stval();// get the fault virtual address
+    if(fault_va>p->sz|| fault_va<p->trapframe->sp){
+      FORJMP:
+      p->killed=1;
+    }
+    else{
+      // 查找查找该地址属于哪一个VMA
+      int i=0;
+      struct VMA *vma;
+      for(;i<MAXVMA;++i){
+        vma=&p->vma[i];
+        if(vma->used&&vma->addr<=fault_va&&vma->addr+vma->len>fault_va){
+          break;
+        }
+      }
+      if(i==MAXVMA){
+        goto FORJMP;
+      }
+      int pte_flags = PTE_U;
+      if(vma->prot&PROT_READ){
+        pte_flags |= PTE_R;
+      }
+      if(vma->prot&PROT_WRITE){
+        pte_flags |= PTE_W;
+      }
+      if(vma->prot&PROT_EXEC){
+        pte_flags |= PTE_X;
+      }
+
+      if((vma->vfile->readable==0 && r_scause()==13)||(vma->vfile->writable==0 && r_scause()==15)){
+        /*
+        13: 文件缺少读权限
+        15: 文件缺少写权限
+        */
+        goto FORJMP;
+      }
+
+      void *pa=kalloc();
+      if(pa==0)goto FORJMP;
+      memset(pa,0,PGSIZE);
+
+      // Read from file
+      uint offset=vma->offset+PGROUNDDOWN(fault_va-vma->addr);
+      // 之所以要向下舍入到最近的页边界，是因为此处的地址都是虚拟地址，虚拟地址是以PGSIZE为基本块的
+
+      ilock(vma->vfile->ip);
+      int readres=readi(vma->vfile->ip,0,(uint64)pa,offset,PGSIZE);// 当user_dst参数为1时，dst参数被视为用户空间的虚拟地址，否则被视为系统空间。PG分配的是物理地址
+      if(readres==0){
+        iunlock(vma->vfile->ip);
+        kfree(pa);
+        goto FORJMP;
+      }
+      iunlock(vma->vfile->ip);
+
+      // Adding a page map.
+      if(mappages(p->pagetable,PGROUNDDOWN(fault_va),PGSIZE,(uint64)pa,pte_flags)<0){
+        kfree(pa);
+        goto FORJMP;
+      }
+    }
+    #endif
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

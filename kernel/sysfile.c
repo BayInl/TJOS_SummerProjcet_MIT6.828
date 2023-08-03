@@ -484,3 +484,105 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  int len, prot, flags, vfd, offset;
+  uint64 addr;
+  struct file* vfile;
+  if(argaddr(0,&addr)<0 || argint(1,&len)<0 || argint(2,&prot)<0 || 
+        argint(3,&flags)<0 || argfd(4,&vfd,&vfile)<0|| argint(5,&offset)<0){
+          return -1;
+        }
+  
+  if(addr!=0||offset!=0||len<0){
+    return -1;
+  }
+
+  if(!vfile->writable&&(prot& PROT_WRITE )&&(flags&MAP_SHARED)){
+    return -1;
+  }
+
+  len=PGROUNDUP(len); // map的最小单位是PGSIZE
+  struct proc*p=myproc();
+
+  // 缺少足够的内存空间
+  if(p->sz+len>MAXVA){
+    return -1;
+  }
+  // 遍历查找该进程下可用的VMA表
+  for(int i=0;i<MAXVMA;++i){
+    struct VMA *vma=&p->vma[i];
+    if(vma->used)continue;
+    vma->used=1;
+    vma->addr=p->sz; // Yes, I know
+    vma->flags=flags;
+    vma->len=len;
+    vma->offset=offset;
+    vma->prot=prot;
+    vma->vfd=vfd;
+    vma->vfile=vfile;
+
+    // 增加文件的引用计数
+    filedup(vfile);
+    p->sz += len;
+    return vma->addr;
+  }
+  return -1;
+}
+
+/*
+munmap(addr, length)应删除指定地址范围内的mmap映射。
+如果进程修改了内存并将其映射为MAP_SHARED，则应首先将修改写入文件。
+munmap调用可能只覆盖mmap区域的一部分，
+但您可以认为它取消映射的位置要么在区域起始位置，
+要么在区域结束位置，要么就是整个区域(但不会在区域中间“打洞”)。
+*/
+uint64 
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+  if(argaddr(0,&addr)<0||argint(1,&len)<0){
+    return -1;
+  }
+  if(len<0){
+    return -1;
+  }
+  int i=0;
+  struct proc*p=myproc();
+  struct VMA *vma;
+  for(;i<MAXVMA;++i){
+    vma=&p->vma[i];
+    if(vma->used&&vma->len>=len){
+      if(vma->addr==addr){// At the beginning
+        vma->addr+=len;// Update the starting position of address
+        vma->len-=len;
+        break;
+      }
+      if(addr+len==vma->addr+vma->len){// At the end
+        vma->len-=len;
+        break;
+      }
+    }
+  }
+  if(i==MAXVMA){
+    return -1;
+  }
+  
+  // Write back MAP_SHARED page to filesystem
+  if(vma->flags==MAP_SHARED&&(vma->prot&PROT_WRITE)!=0){
+    filewrite(vma->vfile,addr,len);
+  }
+
+  // release this map
+  uvmunmap(p->pagetable, addr, len / PGSIZE, 1);
+ 
+ // if current vma has release all map
+ if(vma->len==0){
+    fileclose(vma->vfile);
+    vma->used=0;
+ }
+ return 0;
+}
