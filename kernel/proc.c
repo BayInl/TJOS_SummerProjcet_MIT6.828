@@ -119,7 +119,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
-
+  p->tracemark=0;//I don't know is it correct or not.
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -158,6 +158,7 @@ freeproc(struct proc *p)
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
+  p->tracemark=0;
   p->parent = 0;
   p->name[0] = 0;
   p->chan = 0;
@@ -289,6 +290,8 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // copy parent's tracemark
+  np->tracemark=p->tracemark;
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -378,6 +381,35 @@ exit(int status)
   panic("zombie exit");
 }
 
+// Collect the number of processes whose state is not UNUSED
+uint64 nproc(void)
+{
+  struct proc *p;
+  uint64 cnt=0;
+  for(p=proc;p<&proc[NPROC];p++){
+    acquire(&p->lock);
+    if(p->state!=UNUSED){
+      ++cnt;
+    }
+    release(&p->lock);
+  }
+  return cnt;
+}
+
+int getsysinfo(uint64 addr)
+{
+  struct sysinfo {
+  uint64 freemem;   // amount of free memory (bytes)
+  uint64 nproc;     // number of process
+  } s;
+  s.freemem=freemem();
+  s.nproc=nproc();
+
+  if(copyout(myproc()->pagetable,addr,(char *)(&s),sizeof(s))<0){
+    return -1;
+  }
+  return 0;
+}
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
 int

@@ -95,3 +95,27 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// set mask that specifies which system calls to trace
+uint64
+sys_trace(void)
+{
+  int tracemark;
+  if(argint(0, &tracemark) < 0)
+    return -1;
+  myproc()->tracemark=tracemark;
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 addr;
+  
+  if(argaddr(0,&addr)<0){
+    
+    return -1;
+  }
+  
+  return getsysinfo(addr);
+}
